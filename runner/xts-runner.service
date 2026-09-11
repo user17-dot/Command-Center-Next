@@ -1,0 +1,20 @@
+[Unit]
+Description=XTS Native Runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xtsrunner
+Group=xtsrunner
+WorkingDirectory=/opt/xts/runner
+Environment=XTS_RUNNER_CONFIG=/etc/xts-runner.yaml
+ExecStart=/opt/xts/runner/.venv/bin/uvicorn xts_runner.main:app --host 0.0.0.0 --port 8765
+Restart=always
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=30
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
