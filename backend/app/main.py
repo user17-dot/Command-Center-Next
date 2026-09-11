@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
@@ -10,9 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from .native_runner import NativeRunnerClient
 from .omnilab import OmniLabClient, OmniLabError
 
-app = FastAPI(title="XTS Command Center Next", version="0.1.0")
+app = FastAPI(title="XTS Command Center Next", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -27,6 +28,7 @@ STATIC_INDEX = Path(__file__).with_name("static") / "index.html"
 class HostCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     base_url: str = Field(min_length=4)
+    backend: Literal["NATIVE", "OMNILAB"] = "NATIVE"
 
 
 class OperationMap(BaseModel):
@@ -55,8 +57,14 @@ def dashboard() -> FileResponse:
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "service": "command-center-next"}
+def health() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "service": "command-center-next",
+        "version": "0.2.0",
+        "execution_backends": ["NATIVE", "OMNILAB"],
+        "default_backend": "NATIVE",
+    }
 
 
 @app.get("/api/hosts")
@@ -71,9 +79,11 @@ def create_host(payload: HostCreate) -> dict[str, Any]:
         "id": host_id,
         "name": payload.name,
         "base_url": payload.base_url.rstrip("/"),
+        "backend": payload.backend,
         "status": "UNKNOWN",
         "last_seen": None,
         "operation_map": OperationMap().model_dump(),
+        "capabilities": None,
     }
     HOSTS[host_id] = host
     return host
@@ -85,20 +95,27 @@ async def discover(host_id: str) -> dict[str, Any]:
     if not host:
         raise HTTPException(404, "Host not found")
     try:
+        if host["backend"] == "NATIVE":
+            health_data = await NativeRunnerClient(host["base_url"]).health()
+            host["status"] = "ONLINE"
+            host["last_seen"] = now()
+            host["capabilities"] = health_data
+            return {"host": host, "backend": "NATIVE", "health": health_data, "operations": []}
+
         operations = await OmniLabClient(host["base_url"]).operations()
+        host["status"] = "ONLINE"
+        host["last_seen"] = now()
+        return {
+            "host": host,
+            "backend": "OMNILAB",
+            "operations": [
+                {"operation_id": op.operation_id, "method": op.method, "path": op.path}
+                for op in sorted(operations.values(), key=lambda value: value.operation_id)
+            ],
+        }
     except Exception as exc:
         host["status"] = "OFFLINE"
-        raise HTTPException(502, f"ATS discovery failed: {exc}") from exc
-
-    host["status"] = "ONLINE"
-    host["last_seen"] = now()
-    return {
-        "host": host,
-        "operations": [
-            {"operation_id": op.operation_id, "method": op.method, "path": op.path}
-            for op in sorted(operations.values(), key=lambda value: value.operation_id)
-        ],
-    }
+        raise HTTPException(502, f"{host['backend']} discovery failed: {exc}") from exc
 
 
 @app.put("/api/hosts/{host_id}/operation-map")
@@ -106,6 +123,8 @@ def set_operation_map(host_id: str, payload: OperationMap) -> dict[str, Any]:
     host = HOSTS.get(host_id)
     if not host:
         raise HTTPException(404, "Host not found")
+    if host["backend"] != "OMNILAB":
+        raise HTTPException(409, "Operation mapping is only used by the OmniLab backend")
     host["operation_map"] = payload.model_dump()
     return host
 
@@ -115,15 +134,20 @@ async def devices(host_id: str) -> Any:
     host = HOSTS.get(host_id)
     if not host:
         raise HTTPException(404, "Host not found")
-    operation_id = host["operation_map"].get("list_devices")
-    if not operation_id:
-        raise HTTPException(409, "list_devices operation is not mapped")
     try:
+        if host["backend"] == "NATIVE":
+            return await NativeRunnerClient(host["base_url"]).devices()
+
+        operation_id = host["operation_map"].get("list_devices")
+        if not operation_id:
+            raise HTTPException(409, "list_devices operation is not mapped")
         return await OmniLabClient(host["base_url"]).call(operation_id)
+    except HTTPException:
+        raise
     except OmniLabError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(502, f"ATS request failed: {exc}") from exc
+        raise HTTPException(502, f"Execution backend request failed: {exc}") from exc
 
 
 @app.post("/api/runs")
@@ -131,30 +155,80 @@ async def create_run(payload: RunCreate) -> dict[str, Any]:
     host = HOSTS.get(payload.host_id)
     if not host:
         raise HTTPException(404, "Host not found")
-    operation_id = host["operation_map"].get("create_run")
-    if not operation_id:
-        raise HTTPException(409, "create_run operation is not mapped")
 
     run_id = str(uuid4())
     local = {
         "id": run_id,
         "host_id": payload.host_id,
+        "backend": host["backend"],
         "status": "SUBMITTING",
         "created_at": now(),
         "remote": None,
     }
     RUNS[run_id] = local
+
     try:
-        remote = await OmniLabClient(host["base_url"]).call(
-            operation_id, body=payload.request
-        )
+        if host["backend"] == "NATIVE":
+            request = dict(payload.request)
+            request["job_id"] = run_id
+            remote = await NativeRunnerClient(host["base_url"], timeout=30.0).start_job(request)
+        else:
+            operation_id = host["operation_map"].get("create_run")
+            if not operation_id:
+                raise HTTPException(409, "create_run operation is not mapped")
+            remote = await OmniLabClient(host["base_url"]).call(operation_id, body=payload.request)
+
         local["remote"] = remote
         local["status"] = "SUBMITTED"
         return local
+    except HTTPException:
+        local["status"] = "SUBMIT_FAILED"
+        raise
     except Exception as exc:
         local["status"] = "SUBMIT_FAILED"
         local["error"] = str(exc)
-        raise HTTPException(502, f"ATS run submission failed: {exc}") from exc
+        raise HTTPException(502, f"Run submission failed: {exc}") from exc
+
+
+@app.post("/api/runs/{run_id}/cancel")
+async def cancel_run(run_id: str) -> dict[str, Any]:
+    run = RUNS.get(run_id)
+    if not run:
+        raise HTTPException(404, "Run not found")
+    host = HOSTS.get(run["host_id"])
+    if not host:
+        raise HTTPException(404, "Host not found")
+    try:
+        if host["backend"] == "NATIVE":
+            remote = await NativeRunnerClient(host["base_url"]).cancel_job(run_id)
+        else:
+            operation_id = host["operation_map"].get("cancel_run")
+            if not operation_id:
+                raise HTTPException(409, "cancel_run operation is not mapped")
+            remote = await OmniLabClient(host["base_url"]).call(operation_id, path_params={"id": run_id})
+        run["status"] = "CANCELLING"
+        run["remote"] = remote
+        return run
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Cancel failed: {exc}") from exc
+
+
+@app.get("/api/runs/{run_id}/log")
+async def run_log(run_id: str, tail: int = 200) -> Any:
+    run = RUNS.get(run_id)
+    if not run:
+        raise HTTPException(404, "Run not found")
+    host = HOSTS.get(run["host_id"])
+    if not host:
+        raise HTTPException(404, "Host not found")
+    if host["backend"] != "NATIVE":
+        raise HTTPException(409, "Direct log tail is currently available for Native Runner jobs")
+    try:
+        return await NativeRunnerClient(host["base_url"]).job_log(run_id, tail)
+    except Exception as exc:
+        raise HTTPException(502, f"Log fetch failed: {exc}") from exc
 
 
 @app.get("/api/runs")
