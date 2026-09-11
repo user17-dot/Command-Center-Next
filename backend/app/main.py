@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .omnilab import OmniLabClient, OmniLabError
@@ -18,6 +20,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+STATIC_INDEX = Path(__file__).with_name("static") / "index.html"
 
 
 class HostCreate(BaseModel):
@@ -43,6 +47,11 @@ RUNS: dict[str, dict[str, Any]] = {}
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@app.get("/", include_in_schema=False)
+def dashboard() -> FileResponse:
+    return FileResponse(STATIC_INDEX)
 
 
 @app.get("/api/health")
