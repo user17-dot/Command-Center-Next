@@ -1,0 +1,5 @@
+runner_id: IND-NOI-001
+site_id: INDIA_NOIDA
+xts_root: /opt/xts
+bind_host: 0.0.0.0
+bind_port: 8765
