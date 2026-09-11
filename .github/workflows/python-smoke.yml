@@ -1,0 +1,25 @@
+name: Python smoke test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+      - name: Install runner dependencies
+        run: pip install -r runner/requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q backend runner
+      - name: Import Command Center
+        run: PYTHONPATH=backend python -c "from app.main import app; assert app.title == 'XTS Command Center Next'"
+      - name: Import Native Runner
+        run: PYTHONPATH=runner python -c "from xts_runner.main import app; assert app.title == 'XTS Native Runner'"
