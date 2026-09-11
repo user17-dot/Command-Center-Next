@@ -13,6 +13,8 @@ class ToolInstall:
     version: str
     root: Path
     launcher: Path
+    suite_home: Path
+    results_dir: Path
 
 
 class ToolNotInstalled(FileNotFoundError):
@@ -37,5 +39,14 @@ def resolve_tool(
         raise ValueError(f"Unsupported suite: {suite}")
     for launcher in launchers[suite]:
         if launcher.is_file():
-            return ToolInstall(suite, source, version, root, launcher)
+            suite_home = launcher.parent.parent
+            return ToolInstall(
+                suite=suite,
+                source=source,
+                version=version,
+                root=root,
+                launcher=launcher,
+                suite_home=suite_home,
+                results_dir=suite_home / "results",
+            )
     raise ToolNotInstalled(f"TOOL_NOT_INSTALLED: {suite} {source} {version} at {root}")
