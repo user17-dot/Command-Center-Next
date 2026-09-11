@@ -1,6 +1,6 @@
 # XTS Command Center Next
 
-Redesigned Android xTS lab control plane integrating OmniLab Android Test Station (ATS) 2.0 as the Linux execution backend.
+Redesigned Android xTS lab control plane inspired by the open-source Android Test Station / TradeFed Cluster architecture.
 
 ## Architecture
 
@@ -8,40 +8,83 @@ Redesigned Android xTS lab control plane integrating OmniLab Android Test Statio
 Windows Browser
       |
       v
-Command Center Next (FastAPI + React)
+Command Center Next (FastAPI)
       |
-      v
-OmniLab Gateway
-      |
-      v
-Linux ATS 2.0 Host(s)
-      |
-      v
-Tradefed / CTS / GTS / VTS
-      |
-      v
-Android Devices
+      +-----------------------------+
+      |                             |
+      v                             v
+Native Linux Runner             OmniLab ATS 2
+PRIMARY / Docker-free           OPTIONAL
+      |                             |
+      +-------------+---------------+
+                    v
+             Tradefed / xTS
+                    v
+            Android Devices
 ```
 
 The legacy `user17-dot/Project` repository is reference-only and is not modified.
 
-## Principle
+## Why this design
 
-Command Center owns project workflow, role-aware UX, job lineage, review and reporting. OmniLab ATS owns host/device execution, scheduling, Tradefed lifecycle and test-run state.
+Full OmniLab ATS deployment uses Docker. Office lab hosts may not permit Docker, so Command Center Next keeps the good separation used by Android Test Station / TradeFed Cluster while providing a small native Linux runner that needs only Python, ADB/Fastboot, Java and installed CTS/GTS/VTS tools.
 
-The gateway does not invent ATS endpoints. It discovers each host's OpenAPI document (normally `/_ah/api_docs/api.json`) and maps semantic operations to that host's actual `operationId`s.
+OmniLab support remains available as an optional backend on hosts where Docker is allowed.
 
-## Initial scope
+## Native Runner
 
-- Register ATS Linux hosts
-- Health + OpenAPI discovery
-- Host/device/run dashboard
-- Start/cancel/inspect test runs through mapped ATS operations
-- Clean Tester-first dashboard
-- Adapter boundary for later IR/MR/SQC, result review, CR and verification workflows
+The Docker-free runner lives under `runner/` and provides:
 
-## Stack
+- ADB device inventory and explicit states
+- Fixed xTS tool/version paths
+- CTS/GTS/VTS Tradefed execution
+- Structured subprocess lifecycle (`shell=False`)
+- Job status
+- Process-group cancellation
+- Tail logs
+- systemd service support
 
-- Backend: FastAPI, SQLAlchemy, SQLite locally / PostgreSQL-ready
-- Frontend: React + TypeScript + Vite
-- Integration: HTTPX + OmniLab ATS OpenAPI discovery
+See `runner/README.md`.
+
+## Tool layout
+
+```text
+/opt/xts/
+├── tools/
+│   ├── CTS/
+│   │   ├── official/
+│   │   └── pab/
+│   ├── GTS/
+│   └── VTS/
+├── runner/
+├── state/
+├── incoming/
+├── outgoing/
+└── logs/
+```
+
+The runner never searches the machine for another tool build. A requested version must exist at its exact configured path.
+
+## Command Center
+
+The dashboard supports both execution backends and defaults to Native Runner. It can register hosts, verify health, read connected devices and submit native xTS jobs. OmniLab OpenAPI discovery is retained for optional ATS hosts.
+
+## Run the Command Center
+
+Windows:
+
+```bat
+start.bat
+```
+
+Linux:
+
+```bash
+bash start.sh
+```
+
+Open `http://127.0.0.1:8000`.
+
+## Upstream references
+
+See `docs/UPSTREAM_OMNILAB.md` for the Android Test Station and TradeFed Cluster upstream projects and licensing notes.
