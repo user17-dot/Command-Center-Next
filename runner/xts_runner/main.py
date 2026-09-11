@@ -13,7 +13,7 @@ from .tool_registry import ToolNotInstalled, resolve_tool
 
 config = RunnerConfig.load()
 processes = ProcessManager()
-app = FastAPI(title="XTS Native Runner", version="0.1.0")
+app = FastAPI(title="XTS Native Runner", version="0.2.0")
 
 
 class RunRequest(BaseModel):
@@ -32,12 +32,37 @@ def health() -> dict:
         "runner_id": config.runner_id,
         "site_id": config.site_id,
         "xts_root": str(config.xts_root),
+        "version": "0.2.0",
+        "suites": ["CTS", "GTS", "VTS"],
     }
 
 
 @app.get("/devices")
 def devices() -> list[dict]:
     return [device.to_dict() for device in list_devices()]
+
+
+@app.get("/tools/check")
+def check_tool(
+    suite: Literal["CTS", "GTS", "VTS"],
+    source: Literal["official", "pab"],
+    version: str,
+    android_version: str | None = None,
+) -> dict:
+    try:
+        tool = resolve_tool(config, suite, source, version, android_version)
+    except ToolNotInstalled as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "installed": True,
+        "suite": tool.suite,
+        "source": tool.source,
+        "version": tool.version,
+        "launcher": str(tool.launcher),
+        "results_dir": str(tool.results_dir),
+    }
 
 
 @app.get("/jobs")
@@ -73,7 +98,13 @@ def start_job(payload: RunRequest) -> dict:
     log_path = config.xts_root / "logs" / f"{payload.job_id}.log"
     argv = [str(tool.launcher), *payload.args]
     try:
-        item = processes.start(payload.job_id, argv, tool.root, log_path)
+        item = processes.start(
+            payload.job_id,
+            argv,
+            tool.suite_home,
+            log_path,
+            tool.results_dir,
+        )
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     return item.to_dict()
